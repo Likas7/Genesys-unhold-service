@@ -30,8 +30,98 @@
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      padding: 1rem;
+      padding: 0.75rem;
     }
+
+    /* --- Banner de Alerta Operacional --- */
+    .operator-banner {
+      width: 100%;
+      min-height: 44px;
+      border-radius: 6px;
+      padding: 6px 14px;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 0.85rem;
+      transition: all 0.3s ease;
+      box-sizing: border-box;
+    }
+    .operator-banner.normal {
+      background: rgba(30, 41, 59, 0.95);
+      border: 1px solid #334155;
+      color: #cbd5e1;
+    }
+    .operator-banner.alert-active {
+      background: linear-gradient(90deg, #991b1b, #ef4444);
+      border: 1px solid #f87171;
+      color: #ffffff;
+      box-shadow: 0 0 16px rgba(239, 68, 68, 0.75);
+      animation: pulse-alert 0.8s infinite alternate;
+    }
+    @keyframes pulse-alert {
+      from { filter: brightness(1); }
+      to { filter: brightness(1.15); }
+    }
+    .banner-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .banner-icon {
+      font-size: 1.15rem;
+      flex-shrink: 0;
+    }
+    .banner-text {
+      font-size: 0.82rem;
+      line-height: 1.3;
+    }
+    .banner-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .attempts-badge {
+      background: rgba(0, 0, 0, 0.45);
+      color: #fef08a;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      border: 1px solid rgba(254, 240, 138, 0.3);
+    }
+    .status-dot-green {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #10b981;
+      box-shadow: 0 0 6px #10b981;
+    }
+
+    /* Modo Compacto em Iframe (Script da Genesys) */
+    @media (max-height: 90px) {
+      body {
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+        min-height: auto;
+      }
+      .header, .stats-grid, .log-container {
+        display: none !important;
+      }
+      .operator-banner {
+        margin: 0;
+        height: 100vh;
+        border-radius: 4px;
+      }
+    }
+
     .header {
       display: flex;
       justify-content: space-between;
@@ -161,29 +251,29 @@
     }
     .log-time {
       color: var(--text-muted);
-      white-space: nowrap;
+      flex-shrink: 0;
     }
-    .log-msg { word-break: break-all; }
-    .log-msg.info { color: #93c5fd; }
-    .log-msg.success { color: #86efac; }
-    .log-msg.warn { color: #fde047; }
-    .log-msg.error { color: #fca5a5; font-weight: 600; }
-    .log-msg.unhold { 
-      color: #f87171; 
-      font-weight: 700;
-      background: rgba(239, 68, 68, 0.15);
-      padding: 1px 4px;
-      border-radius: 3px;
+    .log-msg {
+      word-break: break-all;
     }
+    .log-msg.info { color: var(--text); }
+    .log-msg.success { color: var(--success); }
+    .log-msg.warn { color: var(--warning); }
+    .log-msg.error { color: var(--danger); }
+    .log-msg.unhold { color: #f43f5e; font-weight: 700; }
+
     .auth-overlay {
       position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background-color: rgba(15, 23, 42, 0.95);
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(4px);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 100;
-      padding: 1rem;
     }
     .auth-card {
       background-color: var(--card-bg);
@@ -220,6 +310,18 @@
   </style>
 </head>
 <body>
+
+  <!-- Alerta Visual para o Atendente (Visível no modo banner e no modo completo) -->
+  <div id="operatorBanner" class="operator-banner normal">
+    <div class="banner-left">
+      <span class="banner-icon">🛡️</span>
+      <span id="bannerText" class="banner-text"><strong>Proteção de Atendimento:</strong> Função "Em Espera" desabilitada para esta operação.</span>
+    </div>
+    <div class="banner-right">
+      <span id="bannerAttemptsBadge" class="attempts-badge" style="display: none;">0 violações</span>
+      <span class="status-dot-green"></span>
+    </div>
+  </div>
 
   <div id="authOverlay" class="auth-overlay" style="display: none;">
     <div class="auth-card">
@@ -283,20 +385,22 @@
     let channelId = null;
     let heartbeatInterval = null;
 
-    // Métricas
+    // Métricas e Alertas
     let unholdCount = 0;
     let activeCalls = new Set();
     let latencies = [];
+    let bannerResetTimeout = null;
 
     // Fila Concorrente e Controle de Disparo Único
     let isPatching = new Map();
     let pendingUnholds = new Map();
-    let lastHandledHoldTime = new Map(); // convId -> timestamp do último unhold contabilizado
+    let lastHandledHoldTime = new Map();
 
     const isInIframe = window.self !== window.top;
 
     function log(msg, type = 'info') {
       const container = document.getElementById('logBody');
+      if (!container) return;
       const entry = document.createElement('div');
       entry.className = 'log-entry';
       
@@ -315,8 +419,57 @@
     function setStatus(status, text) {
       const badge = document.getElementById('statusBadge');
       const textEl = document.getElementById('statusText');
-      badge.className = `status-badge ${status}`;
-      textEl.innerText = text;
+      if (badge && textEl) {
+        badge.className = `status-badge ${status}`;
+        textEl.innerText = text;
+      }
+    }
+
+    // --- Alerta Visual e Sonoro ao Atendente ---
+    function triggerOperatorAlert(count) {
+      playWarningTone();
+      const banner = document.getElementById('operatorBanner');
+      const text = document.getElementById('bannerText');
+      const badge = document.getElementById('bannerAttemptsBadge');
+      if (!banner || !text) return;
+      
+      banner.className = 'operator-banner alert-active';
+      text.innerHTML = `<strong>🚨 ATENÇÃO:</strong> A função 'Em Espera' está bloqueada nesta operação! A chamada foi despausada automaticamente.`;
+      
+      if (badge) {
+        badge.style.display = 'inline-block';
+        badge.innerText = `${count}ª tentativa`;
+      }
+      
+      clearTimeout(bannerResetTimeout);
+      bannerResetTimeout = setTimeout(() => {
+        banner.className = 'operator-banner normal';
+        text.innerHTML = `<strong>🛡️ Proteção Ativa:</strong> Função "Em Espera" desabilitada para esta operação.`;
+        if (badge) {
+          badge.innerText = `${count} ${count === 1 ? 'tentativa bloqueada' : 'tentativas bloqueadas'}`;
+        }
+      }, 6000);
+    }
+
+    function playWarningTone() {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.08); // A5
+        gain.gain.setValueAtTime(0.2, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+      } catch (e) {
+        console.warn('Tom sonoro não pôde ser reproduzido:', e);
+      }
     }
 
     function authenticate() {
@@ -421,7 +574,10 @@
       try {
         log('Autenticado com sucesso! Obtendo dados do operador...', 'success');
         currentUser = await apiRequest('/users/me');
-        document.getElementById('agentInfo').innerText = `Operador: ${currentUser.name} (${currentUser.email || currentUser.username})`;
+        const agentEl = document.getElementById('agentInfo');
+        if (agentEl) {
+          agentEl.innerText = `Operador: ${currentUser.name} (${currentUser.email || currentUser.username})`;
+        }
         log(`Sessão ativa para: ${currentUser.name} (ID: ${currentUser.id})`, 'info');
 
         const channel = await apiRequest('/notifications/channels', { method: 'POST' });
@@ -497,9 +653,26 @@
       if (shouldCount) {
         lastHandledHoldTime.set(convId, now);
         unholdCount++;
-        document.getElementById('statUnholds').innerText = unholdCount;
+        const statEl = document.getElementById('statUnholds');
+        if (statEl) statEl.innerText = unholdCount;
+        
         log(`🚨 ESPERA DETECTADA na chamada: ${convId}!`, 'unhold');
         log(`Disparando UNHOLD imediato...`, 'warn');
+        triggerOperatorAlert(unholdCount);
+
+        // Grava auditoria nos dados da chamada (Participant Attributes)
+        apiRequest(`/conversations/calls/${convId}/participants/${participantId}/attributes`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            attributes: {
+              'Tentativas_Em_Espera': String(unholdCount)
+            }
+          })
+        }).then(() => {
+          log(`📝 Gravado atributo 'Tentativas_Em_Espera: ${unholdCount}' na interação.`, 'info');
+        }).catch(err => {
+          console.warn('Erro ao gravar atributo de tentativa:', err);
+        });
       }
 
       try {
@@ -512,7 +685,8 @@
         latencies.push(reactionTime);
 
         const avgLatency = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
-        document.getElementById('statLatency').innerText = `${avgLatency} ms`;
+        const latEl = document.getElementById('statLatency');
+        if (latEl) latEl.innerText = `${avgLatency} ms`;
 
         if (shouldCount) {
           log(`✅ Chamada reativada com sucesso em ${reactionTime} ms!`, 'success');
@@ -566,12 +740,14 @@
         isPatching.delete(convId);
         pendingUnholds.delete(convId);
         lastHandledHoldTime.delete(convId);
-        document.getElementById('statCalls').innerText = activeCalls.size;
+        const callsEl = document.getElementById('statCalls');
+        if (callsEl) callsEl.innerText = activeCalls.size;
         return;
       }
 
       activeCalls.add(convId);
-      document.getElementById('statCalls').innerText = activeCalls.size;
+      const callsEl = document.getElementById('statCalls');
+      if (callsEl) callsEl.innerText = activeCalls.size;
 
       if (agentParticipant.held === true) {
         executeUnhold(convId, agentParticipant.id);
