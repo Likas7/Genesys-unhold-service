@@ -175,7 +175,6 @@
       padding: 1px 4px;
       border-radius: 3px;
     }
-    /* Modal de Conexão no Iframe */
     .auth-overlay {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -217,16 +216,11 @@
       display: inline-flex;
       align-items: center;
       gap: 0.5rem;
-      transition: background 0.2s;
-    }
-    .btn-auth:hover {
-      background-color: var(--accent-hover);
     }
   </style>
 </head>
 <body>
 
-  <!-- Overlay para primeira autenticação dentro do iframe -->
   <div id="authOverlay" class="auth-overlay" style="display: none;">
     <div class="auth-card">
       <h2>🛡️ [S4ME] Proteção Anti-Espera</h2>
@@ -250,20 +244,20 @@
 
   <div class="stats-grid">
     <div class="stat-card">
-      <div class="stat-label">Espera Bloqueadas</div>
+      <div class="stat-label">Espera (Hold) Bloqueadas</div>
       <div id="statUnholds" class="stat-value highlight">0</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Chamadas Ativas</div>
+      <div class="stat-label">Chamadas Monitoradas</div>
       <div id="statCalls" class="stat-value">0</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Tempo Reação</div>
+      <div class="stat-label">Tempo Médio de Reação</div>
       <div id="statLatency" class="stat-value">-- ms</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Status Proteção</div>
-      <div class="stat-value" style="font-size: 0.95rem; padding-top: 0.3rem; color: #6ee7b7;">🟢 Anti-Burla Ativo</div>
+      <div class="stat-label">Modo Operacional</div>
+      <div class="stat-value" style="font-size: 0.95rem; padding-top: 0.3rem; color: #6ee7b7;">🟢 Event-Driven (Zero Cota)</div>
     </div>
   </div>
 
@@ -278,7 +272,7 @@
   <script>
     // --- Configuração Genesys Cloud ---
     const CLIENT_ID = 'a743c6f8-f776-4268-8e13-4e3828883a5e';
-    const ENVIRONMENT = 'sae1.pure.cloud'; // Região São Paulo
+    const ENVIRONMENT = 'sae1.pure.cloud';
     const AUTH_URL = `https://login.${ENVIRONMENT}/oauth/authorize`;
     const API_BASE = `https://api.${ENVIRONMENT}/api/v2`;
     const REDIRECT_URI = window.location.origin + window.location.pathname;
@@ -294,13 +288,13 @@
     let activeCalls = new Set();
     let latencies = [];
 
-    // Fila Concorrente Anti-Double-Click
+    // Fila Concorrente e Controle de Disparo Único
     let isPatching = new Map();
     let pendingUnholds = new Map();
+    let lastHandledHoldTime = new Map(); // convId -> timestamp do último unhold contabilizado
 
     const isInIframe = window.self !== window.top;
 
-    // --- Utilitários de Interface ---
     function log(msg, type = 'info') {
       const container = document.getElementById('logBody');
       const entry = document.createElement('div');
@@ -325,9 +319,7 @@
       textEl.innerText = text;
     }
 
-    // --- Autenticação Robusta (Iframe & Popup Handling) ---
     function authenticate() {
-      // 1. Se recebemos o token no hash (após redirecionamento OAuth)
       if (window.location.hash) {
         const hashParams = new URLSearchParams(window.location.hash.substring(1));
         const token = hashParams.get('access_token');
@@ -336,7 +328,6 @@
           localStorage.setItem('gc_token', token);
           window.history.replaceState(null, '', window.location.pathname);
 
-          // Se abriu em janela popup, notifica o opener e fecha
           if (window.opener && window.opener !== window) {
             window.opener.postMessage({ type: 'GC_AUTH_TOKEN', token: token }, '*');
             window.close();
@@ -349,7 +340,6 @@
         }
       }
 
-      // 2. Verifica se já temos token salvo no localStorage do navegador
       const savedToken = localStorage.getItem('gc_token');
       if (savedToken) {
         accessToken = savedToken;
@@ -358,8 +348,6 @@
         return;
       }
 
-      // 3. Se estiver dentro de um IFRAME (como no Script de Atendimento):
-      // NUNCA redirecionamos o iframe direto para o login, pois o login.sae1.pure.cloud bloqueia embedding!
       if (isInIframe) {
         log('Aguardando autorização inicial do operador...', 'warn');
         setStatus('connecting', 'Autorização Necessária');
@@ -367,25 +355,22 @@
         return;
       }
 
-      // 4. Se estiver em aba avulsa, redireciona normalmente
       const loginUrl = `${AUTH_URL}?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
       window.location.href = loginUrl;
     }
 
-    // Abre janela popup rápida para login sem quebrar o iframe
     function openLoginPopup() {
       const loginUrl = `${AUTH_URL}?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
       const width = 500, height = 650;
       const left = (window.screen.width / 2) - (width / 2);
       const top = (window.screen.height / 2) - (height / 2);
       
-      const popup = window.open(
+      window.open(
         loginUrl,
         'gc_auth_popup',
         `width=${width},height=${height},top=${top},left=${left},status=no,menubar=no`
       );
 
-      // Listener para receber token do popup
       const messageListener = (event) => {
         if (event.data && event.data.type === 'GC_AUTH_TOKEN') {
           window.removeEventListener('message', messageListener);
@@ -397,7 +382,6 @@
       };
       window.addEventListener('message', messageListener);
 
-      // Polling de fallback caso o localStorage atualize direto
       const pollTimer = setInterval(() => {
         const token = localStorage.getItem('gc_token');
         if (token) {
@@ -433,12 +417,11 @@
       return response.status === 204 ? null : response.json();
     }
 
-    // --- Inicialização e WebSocket ---
     async function init() {
       try {
         log('Autenticado com sucesso! Obtendo dados do operador...', 'success');
         currentUser = await apiRequest('/users/me');
-        document.getElementById('agentInfo').innerText = `Operador: ${currentUser.name}`;
+        document.getElementById('agentInfo').innerText = `Operador: ${currentUser.name} (${currentUser.email || currentUser.username})`;
         log(`Sessão ativa para: ${currentUser.name} (ID: ${currentUser.id})`, 'info');
 
         const channel = await apiRequest('/notifications/channels', { method: 'POST' });
@@ -497,7 +480,6 @@
       };
     }
 
-    // --- Execução Robusta de Unhold ---
     async function executeUnhold(convId, participantId) {
       if (isPatching.get(convId)) {
         pendingUnholds.set(convId, true);
@@ -507,8 +489,18 @@
       isPatching.set(convId, true);
       const startTime = performance.now();
 
-      log(`🚨 ESPERA DETECTADA na chamada: ${convId}!`, 'unhold');
-      log(`Disparando UNHOLD imediato...`, 'warn');
+      // Contabiliza apenas 1 vez a cada ciclo de hold (janela de 600ms)
+      const now = Date.now();
+      const lastTime = lastHandledHoldTime.get(convId) || 0;
+      const shouldCount = (now - lastTime) > 600;
+
+      if (shouldCount) {
+        lastHandledHoldTime.set(convId, now);
+        unholdCount++;
+        document.getElementById('statUnholds').innerText = unholdCount;
+        log(`🚨 ESPERA DETECTADA na chamada: ${convId}!`, 'unhold');
+        log(`Disparando UNHOLD imediato...`, 'warn');
+      }
 
       try {
         await apiRequest(`/conversations/calls/${convId}/participants/${participantId}`, {
@@ -518,13 +510,13 @@
 
         const reactionTime = Math.round(performance.now() - startTime);
         latencies.push(reactionTime);
-        unholdCount++;
-        document.getElementById('statUnholds').innerText = unholdCount;
 
         const avgLatency = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
         document.getElementById('statLatency').innerText = `${avgLatency} ms`;
 
-        log(`✅ Chamada despausada em ${reactionTime} ms!`, 'success');
+        if (shouldCount) {
+          log(`✅ Chamada reativada com sucesso em ${reactionTime} ms!`, 'success');
+        }
 
       } catch (err) {
         log(`❌ Falha ao despausar: ${err.message}`, 'error');
@@ -533,7 +525,7 @@
 
         if (pendingUnholds.get(convId)) {
           pendingUnholds.set(convId, false);
-          log(`⚡ Clique duplo detectado! Forçando UNHOLD imediato...`, 'warn');
+          log(`⚡ Clique duplo consecutivo detectado! Forçando UNHOLD imediato...`, 'warn');
           executeUnhold(convId, participantId);
         } else {
           setTimeout(() => verifyStateAfterUnhold(convId, participantId), 250);
@@ -550,7 +542,7 @@
 
         const agent = live.participants.find(p => p.id === participantId || p.userId === currentUser.id);
         if (agent && agent.held === true) {
-          log(`🔍 Rechecagem detectou HOLD. Forçando despause...`, 'warn');
+          log(`🔍 Rechecagem detectou chamada ainda em HOLD. Reativando...`, 'warn');
           executeUnhold(convId, participantId);
         }
       } catch (e) {}
@@ -573,6 +565,7 @@
         activeCalls.delete(convId);
         isPatching.delete(convId);
         pendingUnholds.delete(convId);
+        lastHandledHoldTime.delete(convId);
         document.getElementById('statCalls').innerText = activeCalls.size;
         return;
       }
