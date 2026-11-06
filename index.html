@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>[S4ME] Auto-Unhold Service - B2C</title>
+  <title>[S4ME] Auto-Unhold & Protection Service - B2C</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
   <style>
     :root {
@@ -40,7 +40,7 @@
       border-radius: 6px;
       padding: 6px 14px;
       margin-bottom: 0.75rem;
-      display: flex;
+      display: none; /* Oculto por padrão - só exibe quando o operador tentar uma ação não permitida */
       align-items: center;
       justify-content: space-between;
       gap: 12px;
@@ -48,12 +48,8 @@
       transition: all 0.3s ease;
       box-sizing: border-box;
     }
-    .operator-banner.normal {
-      background: rgba(30, 41, 59, 0.95);
-      border: 1px solid #334155;
-      color: #cbd5e1;
-    }
     .operator-banner.alert-active {
+      display: flex !important;
       background: linear-gradient(90deg, #991b1b, #ef4444);
       border: 1px solid #f87171;
       color: #ffffff;
@@ -311,22 +307,21 @@
 </head>
 <body>
 
-  <!-- Alerta Visual para o Atendente (Visível no modo banner e no modo completo) -->
-  <div id="operatorBanner" class="operator-banner normal">
+  <!-- Alerta Visual para o Atendente (Exibido apenas quando o operador tentar ação indevida) -->
+  <div id="operatorBanner" class="operator-banner" style="display: none;">
     <div class="banner-left">
-      <span class="banner-icon">🛡️</span>
-      <span id="bannerText" class="banner-text"><strong>Proteção de Atendimento:</strong> Função "Em Espera" desabilitada para esta operação.</span>
+      <span class="banner-icon">🚨</span>
+      <span id="bannerText" class="banner-text"></span>
     </div>
     <div class="banner-right">
-      <span id="bannerAttemptsBadge" class="attempts-badge" style="display: none;">0 violações</span>
-      <span class="status-dot-green"></span>
+      <span id="bannerAttemptsBadge" class="attempts-badge" style="display: none;"></span>
     </div>
   </div>
 
   <div id="authOverlay" class="auth-overlay" style="display: none;">
     <div class="auth-card">
-      <h2>🛡️ [S4ME] Proteção Anti-Espera</h2>
-      <p>Para ativar a proteção nesta sessão, clique no botão abaixo. A autenticação é automática e você só precisa fazer isso uma vez.</p>
+      <h2>🛡️ [S4ME] Tripla Proteção de Voz</h2>
+      <p>Para ativar a proteção nesta sessão (Anti-Espera, Anti-Mudo e Anti-Conferência), clique no botão abaixo. A autenticação é automática e via SSO.</p>
       <button class="btn-auth" onclick="openLoginPopup()">
         🚀 Ativar Proteção de Chamadas
       </button>
@@ -335,7 +330,7 @@
 
   <div class="header">
     <div class="title-group">
-      <h1>🛡️ [S4ME] Auto-Unhold Service</h1>
+      <h1>🛡️ [S4ME] Auto-Unhold & Protection Service</h1>
       <p id="agentInfo">Iniciando serviço...</p>
     </div>
     <div id="statusBadge" class="status-badge connecting">
@@ -346,20 +341,28 @@
 
   <div class="stats-grid">
     <div class="stat-card">
-      <div class="stat-label">Espera (Hold) Bloqueadas</div>
+      <div class="stat-label">Hold Bloqueados</div>
       <div id="statUnholds" class="stat-value highlight">0</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Chamadas Monitoradas</div>
+      <div class="stat-label">Mudo Reativados</div>
+      <div id="statMutes" class="stat-value highlight" style="color: #f59e0b;">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Consultas Derrubadas</div>
+      <div id="statConsults" class="stat-value highlight" style="color: #ec4899;">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Chamadas Ativas</div>
       <div id="statCalls" class="stat-value">0</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Tempo Médio de Reação</div>
+      <div class="stat-label">Tempo Médio Reação</div>
       <div id="statLatency" class="stat-value">-- ms</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Modo Operacional</div>
-      <div class="stat-value" style="font-size: 0.95rem; padding-top: 0.3rem; color: #6ee7b7;">🟢 Event-Driven (Zero Cota)</div>
+      <div class="stat-value" style="font-size: 0.95rem; padding-top: 0.3rem; color: #6ee7b7;">🟢 Tripla Proteção</div>
     </div>
   </div>
 
@@ -386,15 +389,21 @@
     let heartbeatInterval = null;
 
     // Métricas e Alertas
+    let totalBlockedCount = 0;
     let unholdCount = 0;
+    let muteCount = 0;
+    let consultCount = 0;
     let activeCalls = new Set();
     let latencies = [];
     let bannerResetTimeout = null;
 
     // Fila Concorrente e Controle de Disparo Único
-    let isPatching = new Map();
-    let pendingUnholds = new Map();
-    let lastHandledHoldTime = new Map();
+    let isPatchingAgent = new Map();
+    let pendingAgentFix = new Map();
+    let lastHandledHold = new Map();
+    let lastHandledMute = new Map();
+    let isKillingConsult = new Map();
+    let lastHandledConsult = new Map();
 
     const isInIframe = window.self !== window.top;
 
@@ -425,30 +434,56 @@
       }
     }
 
+    function updateStats() {
+      const unholdEl = document.getElementById('statUnholds');
+      if (unholdEl) unholdEl.innerText = unholdCount;
+
+      const muteEl = document.getElementById('statMutes');
+      if (muteEl) muteEl.innerText = muteCount;
+
+      const consultEl = document.getElementById('statConsults');
+      if (consultEl) consultEl.innerText = consultCount;
+    }
+
+    function updateAvgLatency(reactionTime) {
+      if (reactionTime !== undefined) latencies.push(reactionTime);
+      if (latencies.length === 0) return;
+      const avgLatency = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
+      const latEl = document.getElementById('statLatency');
+      if (latEl) latEl.innerText = `${avgLatency} ms`;
+    }
+
     // --- Alerta Visual e Sonoro ao Atendente ---
-    function triggerOperatorAlert(count) {
+    function triggerOperatorAlert(type, count) {
       playWarningTone();
       const banner = document.getElementById('operatorBanner');
       const text = document.getElementById('bannerText');
       const badge = document.getElementById('bannerAttemptsBadge');
       if (!banner || !text) return;
       
+      banner.style.display = 'flex';
       banner.className = 'operator-banner alert-active';
-      text.innerHTML = `<strong>🚨 ATENÇÃO:</strong> A função 'Em Espera' está bloqueada nesta operação! A chamada foi despausada automaticamente.`;
+
+      let msg = `<strong>🚨 ATENÇÃO:</strong> Esta operação não é permitida! A chamada foi despausada automaticamente.`;
+      if (type === 'mute') {
+        msg = `<strong>🚨 ATENÇÃO:</strong> Esta operação não é permitida! O microfone foi reativado automaticamente.`;
+      } else if (type === 'consult') {
+        msg = `<strong>🚨 ATENÇÃO:</strong> Esta operação não é permitida! A tentativa de Consulta/Conferência foi encerrada.`;
+      }
+      text.innerHTML = msg;
       
       if (badge) {
         badge.style.display = 'inline-block';
-        badge.innerText = `${count}ª tentativa`;
+        badge.innerText = `${count}º bloqueio`;
       }
       
       clearTimeout(bannerResetTimeout);
       bannerResetTimeout = setTimeout(() => {
-        banner.className = 'operator-banner normal';
-        text.innerHTML = `<strong>🛡️ Proteção Ativa:</strong> Função "Em Espera" desabilitada para esta operação.`;
-        if (badge) {
-          badge.innerText = `${count} ${count === 1 ? 'tentativa bloqueada' : 'tentativas bloqueadas'}`;
-        }
-      }, 6000);
+        banner.className = 'operator-banner';
+        banner.style.display = 'none';
+        text.innerHTML = '';
+        if (badge) badge.style.display = 'none';
+      }, 5000);
     }
 
     function playWarningTone() {
@@ -636,88 +671,143 @@
       };
     }
 
-    async function executeUnhold(convId, participantId) {
-      if (isPatching.get(convId)) {
-        pendingUnholds.set(convId, true);
+    async function executeAgentProtection(convId, participantId, needsUnhold, needsUnmute) {
+      if (isPatchingAgent.get(convId)) {
+        pendingAgentFix.set(convId, { needsUnhold, needsUnmute });
         return;
       }
 
-      isPatching.set(convId, true);
+      isPatchingAgent.set(convId, true);
       const startTime = performance.now();
-
-      // Contabiliza apenas 1 vez a cada ciclo de hold (janela de 600ms)
       const now = Date.now();
-      const lastTime = lastHandledHoldTime.get(convId) || 0;
-      const shouldCount = (now - lastTime) > 600;
 
-      if (shouldCount) {
-        lastHandledHoldTime.set(convId, now);
-        unholdCount++;
-        const statEl = document.getElementById('statUnholds');
-        if (statEl) statEl.innerText = unholdCount;
-        
-        log(`🚨 ESPERA DETECTADA na chamada: ${convId}!`, 'unhold');
-        log(`Disparando UNHOLD imediato...`, 'warn');
-        triggerOperatorAlert(unholdCount);
+      const patchBody = {};
+      let alertType = null;
 
-        // Grava auditoria nos dados da chamada (Participant Attributes)
-        apiRequest(`/conversations/calls/${convId}/participants/${participantId}/attributes`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            attributes: {
-              'Tentativas_Em_Espera': String(unholdCount)
-            }
-          })
-        }).then(() => {
-          log(`📝 Gravado atributo 'Tentativas_Em_Espera: ${unholdCount}' na interação.`, 'info');
-        }).catch(err => {
-          console.warn('Erro ao gravar atributo de tentativa:', err);
-        });
+      if (needsUnhold) {
+        patchBody.held = false;
+        const lastTime = lastHandledHold.get(convId) || 0;
+        if (now - lastTime > 600) {
+          lastHandledHold.set(convId, now);
+          unholdCount++;
+          totalBlockedCount++;
+          alertType = 'hold';
+          log(`🚨 ESPERA DETECTADA na chamada: ${convId}! Despausando...`, 'unhold');
+        }
       }
+
+      if (needsUnmute) {
+        patchBody.muted = false;
+        const lastTime = lastHandledMute.get(convId) || 0;
+        if (now - lastTime > 600) {
+          lastHandledMute.set(convId, now);
+          muteCount++;
+          if (!alertType) {
+            totalBlockedCount++;
+            alertType = 'mute';
+          }
+          log(`🎤 MUDO DETECTADO na chamada: ${convId}! Reativando microfone...`, 'warn');
+        }
+      }
+
+      if (alertType) {
+        triggerOperatorAlert(alertType, totalBlockedCount);
+      }
+      updateStats();
 
       try {
         await apiRequest(`/conversations/calls/${convId}/participants/${participantId}`, {
           method: 'PATCH',
-          body: JSON.stringify({ held: false })
+          body: JSON.stringify(patchBody)
         });
 
         const reactionTime = Math.round(performance.now() - startTime);
-        latencies.push(reactionTime);
+        updateAvgLatency(reactionTime);
 
-        const avgLatency = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
-        const latEl = document.getElementById('statLatency');
-        if (latEl) latEl.innerText = `${avgLatency} ms`;
-
-        if (shouldCount) {
-          log(`✅ Chamada reativada com sucesso em ${reactionTime} ms!`, 'success');
+        if (alertType) {
+          log(`✅ Proteção do operador aplicada com sucesso em ${reactionTime} ms!`, 'success');
         }
-
       } catch (err) {
-        log(`❌ Falha ao despausar: ${err.message}`, 'error');
+        log(`❌ Falha ao aplicar proteção: ${err.message}`, 'error');
       } finally {
-        isPatching.set(convId, false);
+        isPatchingAgent.set(convId, false);
 
-        if (pendingUnholds.get(convId)) {
-          pendingUnholds.set(convId, false);
-          log(`⚡ Clique duplo consecutivo detectado! Forçando UNHOLD imediato...`, 'warn');
-          executeUnhold(convId, participantId);
+        if (pendingAgentFix.has(convId)) {
+          const pending = pendingAgentFix.get(convId);
+          pendingAgentFix.delete(convId);
+          executeAgentProtection(convId, participantId, pending.needsUnhold, pending.needsUnmute);
         } else {
-          setTimeout(() => verifyStateAfterUnhold(convId, participantId), 250);
+          setTimeout(() => verifyStateAfterAction(convId, participantId), 250);
         }
       }
     }
 
-    async function verifyStateAfterUnhold(convId, participantId) {
-      if (!activeCalls.has(convId) || isPatching.get(convId)) return;
+    async function executeKillConsult(convId, consultParticipantId) {
+      const lockKey = `${convId}_${consultParticipantId}`;
+      if (isKillingConsult.get(lockKey)) return;
+
+      isKillingConsult.set(lockKey, true);
+      const startTime = performance.now();
+      const now = Date.now();
+
+      const lastTime = lastHandledConsult.get(lockKey) || 0;
+      const shouldCount = (now - lastTime) > 600;
+
+      if (shouldCount) {
+        lastHandledConsult.set(lockKey, now);
+        consultCount++;
+        totalBlockedCount++;
+        log(`🚫 CONSULTA/CONFERÊNCIA DETECTADA na chamada: ${convId}!`, 'unhold');
+        log(`Derrubando perna de consulta imediatamente...`, 'warn');
+        triggerOperatorAlert('consult', totalBlockedCount);
+        updateStats();
+      }
+
+      try {
+        await apiRequest(`/conversations/calls/${convId}/participants/${consultParticipantId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ state: 'disconnected' })
+        });
+
+        const reactionTime = Math.round(performance.now() - startTime);
+        updateAvgLatency(reactionTime);
+
+        if (shouldCount) {
+          log(`🛑 Consulta derrubada com sucesso em ${reactionTime} ms!`, 'success');
+        }
+      } catch (err) {
+        log(`❌ Falha ao derrubar consulta: ${err.message}`, 'error');
+      } finally {
+        setTimeout(() => {
+          isKillingConsult.delete(lockKey);
+        }, 500);
+      }
+    }
+
+    async function verifyStateAfterAction(convId, participantId) {
+      if (!activeCalls.has(convId) || isPatchingAgent.get(convId)) return;
 
       try {
         const live = await apiRequest(`/conversations/calls/${convId}`);
         if (!live || !live.participants) return;
 
         const agent = live.participants.find(p => p.id === participantId || p.userId === currentUser.id);
-        if (agent && agent.held === true) {
-          log(`🔍 Rechecagem detectou chamada ainda em HOLD. Reativando...`, 'warn');
-          executeUnhold(convId, participantId);
+        if (agent) {
+          const needsUnhold = agent.held === true;
+          const needsUnmute = agent.muted === true;
+          if (needsUnhold || needsUnmute) {
+            log(`🔍 Rechecagem detectou estado irregular (Hold: ${needsUnhold}, Mute: ${needsUnmute}). Reaplicando...`, 'warn');
+            executeAgentProtection(convId, participantId, needsUnhold, needsUnmute);
+          }
+        }
+
+        const consults = live.participants.filter(p => 
+          p.purpose === 'consult' && 
+          p.state !== 'disconnected' && 
+          !p.endTime
+        );
+        for (const c of consults) {
+          executeKillConsult(convId, c.id);
         }
       } catch (e) {}
     }
@@ -737,9 +827,10 @@
 
       if (isDisconnected) {
         activeCalls.delete(convId);
-        isPatching.delete(convId);
-        pendingUnholds.delete(convId);
-        lastHandledHoldTime.delete(convId);
+        isPatchingAgent.delete(convId);
+        pendingAgentFix.delete(convId);
+        lastHandledHold.delete(convId);
+        lastHandledMute.delete(convId);
         const callsEl = document.getElementById('statCalls');
         if (callsEl) callsEl.innerText = activeCalls.size;
         return;
@@ -749,8 +840,23 @@
       const callsEl = document.getElementById('statCalls');
       if (callsEl) callsEl.innerText = activeCalls.size;
 
-      if (agentParticipant.held === true) {
-        executeUnhold(convId, agentParticipant.id);
+      // 1. Verificar Hold e Mudo no operador
+      const needsUnhold = agentParticipant.held === true;
+      const needsUnmute = agentParticipant.muted === true;
+
+      if (needsUnhold || needsUnmute) {
+        executeAgentProtection(convId, agentParticipant.id, needsUnhold, needsUnmute);
+      }
+
+      // 2. Verificar pernas de Consulta / Conferência
+      const consultParticipants = conversation.participants.filter(p => 
+        p.purpose === 'consult' && 
+        p.state !== 'disconnected' && 
+        !p.endTime
+      );
+
+      for (const consult of consultParticipants) {
+        executeKillConsult(convId, consult.id);
       }
     }
 
