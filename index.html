@@ -32,6 +32,9 @@
       flex-direction: column;
       padding: 1.5rem;
     }
+    body.compact {
+      padding: 0.5rem;
+    }
     .header {
       display: flex;
       justify-content: space-between;
@@ -207,8 +210,8 @@
       <div id="statLatency" class="stat-value">-- ms</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Modo de Proteção</div>
-      <div class="stat-value" style="font-size: 1.1rem; padding-top: 0.4rem; color: #6ee7b7;">Anti-Double-Click Ativo</div>
+      <div class="stat-label">Modo Operacional</div>
+      <div class="stat-value" style="font-size: 1.05rem; padding-top: 0.4rem; color: #6ee7b7;">Event-Driven (Zero Cota)</div>
     </div>
   </div>
 
@@ -233,16 +236,15 @@
     let webSocket = null;
     let channelId = null;
     let heartbeatInterval = null;
-    let watchdogInterval = null;
 
     // Métricas
     let unholdCount = 0;
-    let activeCalls = new Map(); // convId -> { agentParticipantId, isHeld }
+    let activeCalls = new Set();
     let latencies = [];
 
-    // Controle de concorrência e Anti-Double-Click
-    let isPatching = new Map();      // convId -> boolean (se já há PATCH em andamento)
-    let pendingUnholds = new Map();  // convId -> boolean (se houve novo clique de hold durante o PATCH)
+    // Fila Concorrente Anti-Double-Click
+    let isPatching = new Map();     // convId -> boolean
+    let pendingUnholds = new Map(); // convId -> boolean
 
     // --- Utilitários de Interface ---
     function log(msg, type = 'info') {
@@ -343,9 +345,6 @@
         });
         log(`Inscrito no tópico de monitoramento: ${topic}`, 'success');
 
-        // Watchdog ativo: verifica a cada 600ms se alguma chamada ativa ficou presa em hold
-        startWatchdog();
-
       } catch (err) {
         log(`Erro na inicialização: ${err.message}`, 'error');
         setStatus('disconnected', 'Erro na conexão');
@@ -396,10 +395,10 @@
       };
     }
 
-    // --- Execução Robusta de Unhold com Fila e Rechecagem Imediata ---
+    // --- Execução Robusta de Unhold (Anti-Double-Click e Verificação Alvo) ---
     async function executeUnhold(convId, participantId) {
       if (isPatching.get(convId)) {
-        // Se já está processando um PATCH dessa chamada, marca para rechecar imediatamente após o retorno
+        // Se já há um PATCH em andamento, enfileira nova execução imediata
         pendingUnholds.set(convId, true);
         return;
       }
@@ -431,16 +430,37 @@
       } finally {
         isPatching.set(convId, false);
 
-        // Se o operador clicou de novo rapidamente enquanto o primeiro PATCH estava em trânsito
+        // Se houve clique durante o envio, processa a pendência imediatamente
         if (pendingUnholds.get(convId)) {
           pendingUnholds.set(convId, false);
-          log(`⚡ Clique duplo/rápido detectado! Re-executando UNHOLD forçado...`, 'warn');
+          log(`⚡ Clique rápido consecutivo detectado! Forçando UNHOLD imediato...`, 'warn');
           executeUnhold(convId, participantId);
+        } else {
+          // Verificação pontual pós-unhold (com 250ms de delay) para certificar que o estado no Genesys permaneceu false
+          setTimeout(() => verifyStateAfterUnhold(convId, participantId), 250);
         }
       }
     }
 
-    // --- Processador de Eventos de Conversa ---
+    // Verificação pontual apenas após despausar (economiza 99% das chamadas GET)
+    async function verifyStateAfterUnhold(convId, participantId) {
+      if (!activeCalls.has(convId) || isPatching.get(convId)) return;
+
+      try {
+        const live = await apiRequest(`/conversations/calls/${convId}`);
+        if (!live || !live.participants) return;
+
+        const agent = live.participants.find(p => p.id === participantId || p.userId === currentUser.id);
+        if (agent && agent.held === true) {
+          log(`🔍 Rechecagem pontual detectou retorno para HOLD. Forçando unhold...`, 'warn');
+          executeUnhold(convId, participantId);
+        }
+      } catch (e) {
+        // Ignora se a chamada já finalizou
+      }
+    }
+
+    // --- Processador de Eventos de Conversa (100% Orientado a Eventos) ---
     function handleConversationEvent(conversation) {
       if (!conversation || !conversation.id || !conversation.participants) return;
 
@@ -463,47 +483,13 @@
         return;
       }
 
-      const isAgentHeld = agentParticipant.held === true;
-      activeCalls.set(convId, { 
-        agentParticipantId: agentParticipant.id, 
-        isHeld: isAgentHeld 
-      });
+      activeCalls.add(convId);
       document.getElementById('statCalls').innerText = activeCalls.size;
 
       // Se entrou em espera, dispara o unhold imediatamente
-      if (isAgentHeld) {
+      if (agentParticipant.held === true) {
         executeUnhold(convId, agentParticipant.id);
       }
-    }
-
-    // --- Watchdog Ativo Anti-Burla ---
-    // Garante que, mesmo se o operador clicar rápido ou houver perda de pacote,
-    // nenhuma chamada fique em HOLD por mais de 500ms
-    function startWatchdog() {
-      if (watchdogInterval) clearInterval(watchdogInterval);
-
-      watchdogInterval = setInterval(async () => {
-        if (!accessToken || activeCalls.size === 0) return;
-
-        for (const [convId, callData] of activeCalls.entries()) {
-          try {
-            // Busca o estado real da chamada na API
-            const liveConv = await apiRequest(`/conversations/calls/${convId}`);
-            if (!liveConv || !liveConv.participants) continue;
-
-            const agent = liveConv.participants.find(p => 
-              (p.userId === currentUser.id) || (p.purpose === 'agent' || p.purpose === 'user')
-            );
-
-            if (agent && agent.held === true && !isPatching.get(convId)) {
-              log(`🔍 Watchdog pegou chamada ${convId} em HOLD! Forçando unhold imediato...`, 'warn');
-              executeUnhold(convId, agent.id);
-            }
-          } catch (e) {
-            // Chamada pode ter sido encerrada
-          }
-        }
-      }, 700);
     }
 
     window.addEventListener('load', authenticate);
