@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>[S4ME] Auto-Unhold Service - B2C</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 1.5rem;
+    }
+    body.compact {
+      padding: 0.5rem;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .title-group h1 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .title-group p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.8rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background-color: #064e3b;
+      color: #6ee7b7;
+      border: 1px solid #059669;
+    }
+    .status-badge.disconnected {
+      background-color: #7f1d1d;
+      color: #fca5a5;
+      border-color: #dc2626;
+    }
+    .status-badge.connecting {
+      background-color: #78350f;
+      color: #fde68a;
+      border-color: #d97706;
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: currentColor;
+      box-shadow: 0 0 8px currentColor;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .stat-card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1rem;
+    }
+    .stat-label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .stat-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-top: 0.3rem;
+      color: var(--text);
+    }
+    .stat-value.highlight {
+      color: var(--danger);
+    }
+    .log-container {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+      min-height: 250px;
+    }
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+    .log-header h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .btn-clear {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.25rem 0.6rem;
+      border-radius: 0.375rem;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-clear:hover {
+      background-color: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+    }
+    .log-body {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.8rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .log-entry {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      line-height: 1.4;
+    }
+    .log-time {
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .log-msg {
+      word-break: break-all;
+    }
+    .log-msg.info { color: #93c5fd; }
+    .log-msg.success { color: #86efac; }
+    .log-msg.warn { color: #fde047; }
+    .log-msg.error { color: #fca5a5; font-weight: 600; }
+    .log-msg.unhold { 
+      color: #f87171; 
+      font-weight: 700;
+      background: rgba(239, 68, 68, 0.15);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title-group">
+      <h1>🛡️ [S4ME] Auto-Unhold Service</h1>
+      <p id="agentInfo">Autenticando operador no Genesys Cloud...</p>
+    </div>
+    <div id="statusBadge" class="status-badge connecting">
+      <span class="pulse-dot"></span>
+      <span id="statusText">Conectando...</span>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Espera (Hold) Bloqueadas</div>
+      <div id="statUnholds" class="stat-value highlight">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Chamadas Monitoradas</div>
+      <div id="statCalls" class="stat-value">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Tempo Médio de Reação</div>
+      <div id="statLatency" class="stat-value">-- ms</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Região / Ambiente</div>
+      <div class="stat-value" style="font-size: 1.1rem; padding-top: 0.4rem;">sae1 (São Paulo)</div>
+    </div>
+  </div>
+
+  <div class="log-container">
+    <div class="log-header">
+      <h3>Console de Eventos em Tempo Real</h3>
+      <button class="btn-clear" onclick="clearLogs()">Limpar Console</button>
+    </div>
+    <div id="logBody" class="log-body"></div>
+  </div>
+
+  <script>
+    // --- Configuração Genesys Cloud ---
+    const CLIENT_ID = 'a743c6f8-f776-4268-8e13-4e3828883a5e';
+    const ENVIRONMENT = 'sae1.pure.cloud'; // Região São Paulo
+    const AUTH_URL = `https://login.${ENVIRONMENT}/oauth/authorize`;
+    const API_BASE = `https://api.${ENVIRONMENT}/api/v2`;
+    const REDIRECT_URI = window.location.origin + window.location.pathname;
+
+    let accessToken = null;
+    let currentUser = null;
+    let webSocket = null;
+    let channelId = null;
+    let heartbeatInterval = null;
+
+    // Métricas
+    let unholdCount = 0;
+    let activeCalls = new Set();
+    let latencies = [];
+    let processedHolds = new Set(); // Previne loop de unhold
+
+    // --- Utilitários de Interface ---
+    function log(msg, type = 'info') {
+      const container = document.getElementById('logBody');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('pt-BR') + '.' + String(now.getMilliseconds()).padStart(3, '0');
+      
+      entry.innerHTML = `<span class="log-time">[${timeStr}]</span><span class="log-msg ${type}">${msg}</span>`;
+      container.appendChild(entry);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function clearLogs() {
+      document.getElementById('logBody').innerHTML = '';
+    }
+
+    function setStatus(status, text) {
+      const badge = document.getElementById('statusBadge');
+      const textEl = document.getElementById('statusText');
+      badge.className = `status-badge ${status}`;
+      textEl.innerText = text;
+    }
+
+    // --- Autenticação OAuth Implicit Grant ---
+    function authenticate() {
+      // 1. Verifica token no hash (#access_token=...)
+      if (window.location.hash) {
+        const hashParams = new URLSearchParams(window.location.hash.substring(1));
+        const token = hashParams.get('access_token');
+        if (token) {
+          accessToken = token;
+          sessionStorage.setItem('gc_token', token);
+          window.history.replaceState(null, '', window.location.pathname);
+          init();
+          return;
+        }
+      }
+
+      // 2. Verifica token salvo em sessão
+      const savedToken = sessionStorage.getItem('gc_token');
+      if (savedToken) {
+        accessToken = savedToken;
+        init();
+        return;
+      }
+
+      // 3. Se não possui token, redireciona para o login transparente da Genesys
+      log('Iniciando autenticação OAuth com Genesys Cloud...', 'info');
+      const loginUrl = `${AUTH_URL}?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
+      window.location.href = loginUrl;
+    }
+
+    async function apiRequest(endpoint, options = {}) {
+      const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        ...options.headers
+      };
+      
+      const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+      
+      if (response.status === 401) {
+        log('Token expirado. Reautenticando...', 'warn');
+        sessionStorage.removeItem('gc_token');
+        authenticate();
+        throw new Error('Unauthorized');
+      }
+      
+      if (!response.ok && response.status !== 204) {
+        const err = await response.text();
+        throw new Error(`API Error ${response.status}: ${err}`);
+      }
+      
+      return response.status === 204 ? null : response.json();
+    }
+
+    // --- Inicialização e WebSocket ---
+    async function init() {
+      try {
+        log('Autenticado com sucesso! Obtendo dados do operador...', 'success');
+        currentUser = await apiRequest('/users/me');
+        document.getElementById('agentInfo').innerText = `Operador: ${currentUser.name} (${currentUser.email || currentUser.username})`;
+        log(`Sessão ativa para: ${currentUser.name} (ID: ${currentUser.id})`, 'info');
+
+        // Cria canal de notificações
+        log('Criando canal de notificações em tempo real (WebSocket)...', 'info');
+        const channel = await apiRequest('/notifications/channels', { method: 'POST' });
+        channelId = channel.id;
+
+        // Conecta no WebSocket
+        connectWebSocket(channel.connectUri);
+
+        // Inscreve no tópico de conversas do operador
+        const topic = `v2.users.${currentUser.id}.conversations.calls`;
+        await apiRequest(`/notifications/channels/${channelId}/subscriptions`, {
+          method: 'POST',
+          body: JSON.stringify([{ id: topic }])
+        });
+        log(`Inscrito no tópico de monitoramento: ${topic}`, 'success');
+
+      } catch (err) {
+        log(`Erro na inicialização: ${err.message}`, 'error');
+        setStatus('disconnected', 'Erro na conexão');
+      }
+    }
+
+    function connectWebSocket(connectUri) {
+      setStatus('connecting', 'Conectando WebSocket...');
+      webSocket = new WebSocket(connectUri);
+
+      webSocket.onopen = () => {
+        log('WebSocket conectado com sucesso! Monitorando chamadas...', 'success');
+        setStatus('', '🟢 Monitoramento Ativo');
+
+        // Heartbeat para manter conexão viva
+        heartbeatInterval = setInterval(() => {
+          if (webSocket && webSocket.readyState === WebSocket.OPEN) {
+            webSocket.send(JSON.stringify({ message: 'ping' }));
+          }
+        }, 30000);
+      };
+
+      webSocket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.topicName === 'channel.metadata') {
+            return; // Ping pong interno
+          }
+
+          if (data.topicName && data.topicName.includes('conversations.calls')) {
+            handleConversationEvent(data.eventBody);
+          }
+        } catch (e) {
+          console.error('Erro ao processar mensagem do WebSocket:', e);
+        }
+      };
+
+      webSocket.onclose = () => {
+        log('Conexão WebSocket encerrada. Reconectando em 3 segundos...', 'warn');
+        setStatus('disconnected', 'Desconectado');
+        clearInterval(heartbeatInterval);
+        setTimeout(init, 3000);
+      };
+
+      webSocket.onerror = (err) => {
+        log('Erro na conexão WebSocket.', 'error');
+        console.error(err);
+      };
+    }
+
+    // --- Lógica Principal: Detecção de Hold e Despause Imediato ---
+    async function handleConversationEvent(conversation) {
+      if (!conversation || !conversation.id || !conversation.participants) return;
+
+      const convId = conversation.id;
+      activeCalls.add(convId);
+      document.getElementById('statCalls').innerText = activeCalls.size;
+
+      // Localiza o participante do operador
+      const agentParticipant = conversation.participants.find(p => 
+        (p.userId === currentUser.id) || (p.purpose === 'agent' || p.purpose === 'user')
+      );
+
+      if (!agentParticipant) return;
+
+      // Localiza o participante cliente/externo
+      const customerParticipant = conversation.participants.find(p => 
+        p.purpose === 'customer' || p.purpose === 'external'
+      );
+
+      // Verifica se o operador ou a chamada foi colocada em HOLD
+      const isAgentHeld = agentParticipant.held === true;
+      const isCustomerHeld = customerParticipant && customerParticipant.held === true;
+
+      if (isAgentHeld || isCustomerHeld) {
+        const holdKey = `${convId}_${agentParticipant.id}_${Date.now()}`;
+        
+        // Evita disparar múltiplos patches se já despausou no último segundo
+        if (processedHolds.has(convId)) {
+          return;
+        }
+
+        const startTime = performance.now();
+        processedHolds.add(convId);
+
+        log(`🚨 ESPERA (HOLD) DETECTADA na chamada: ${convId}!`, 'unhold');
+        log(`Agente: ${agentParticipant.id} | Disparando UNHOLD automático imediato...`, 'warn');
+
+        try {
+          // Desfaz a espera imediatamente no contexto do operador
+          await apiRequest(`/conversations/calls/${convId}/participants/${agentParticipant.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ held: false })
+          });
+
+          const reactionTime = Math.round(performance.now() - startTime);
+          latencies.push(reactionTime);
+          
+          unholdCount++;
+          document.getElementById('statUnholds').innerText = unholdCount;
+
+          const avgLatency = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
+          document.getElementById('statLatency').innerText = `${avgLatency} ms`;
+
+          log(`✅ UNHOLD executado com sucesso em ${reactionTime} ms! A chamada foi reativada.`, 'success');
+
+        } catch (err) {
+          log(`❌ Falha ao despausar chamada: ${err.message}`, 'error');
+        } finally {
+          // Libera chave após 1.5s
+          setTimeout(() => {
+            processedHolds.delete(convId);
+          }, 1500);
+        }
+      }
+
+      // Se a chamada foi encerrada, remove do monitor
+      const isDisconnected = agentParticipant.endTime || agentParticipant.wrapup;
+      if (isDisconnected) {
+        activeCalls.delete(convId);
+        document.getElementById('statCalls').innerText = activeCalls.size;
+      }
+    }
+
+    // Inicia fluxo de autenticação ao carregar
+    window.addEventListener('load', authenticate);
+  </script>
+</body>
+</html>
